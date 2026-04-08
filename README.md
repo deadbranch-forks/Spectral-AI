@@ -208,11 +208,11 @@ Release\rt_router_benchmark.exe ".."
 
 Three preprints available on Zenodo:
 
-| Title | Scope |
+| Title | DOI |
 |---|---|
-| SpectralAI: O(N log N) Hardware-Accelerated Expert Routing | RT Core attention + Inception Engine |
-| Spectral Routing: Context-Dependent Expert Selection | Snell's law, polysemy, TIR |
-| Expert Specialization in MoE Language Models | Multi-model analysis: syntactic roles, U-shaped selectivity (OLMoE + Qwen) |
+| [SpectralAI: O(N log N) Hardware-Accelerated Expert Routing via RT Core BVH Traversal](https://doi.org/10.5281/zenodo.19457288) | 10.5281/zenodo.19457288 |
+| [Expert Specialization in MoE Language Models: Syntactic Roles Dominate Semantic Topics](https://doi.org/10.5281/zenodo.19457411) | 10.5281/zenodo.19457411 |
+| [Spectral Routing: Context-Dependent Expert Selection via Optical Refraction](https://doi.org/10.5281/zenodo.19457473) | 10.5281/zenodo.19457473 |
 
 ---
 
