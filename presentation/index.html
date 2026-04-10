@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpectralAI — O(log N) MoE Routing via RT Cores</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-card: rgba(18, 18, 30, 0.85);
+  --accent-cyan: #00e5ff;
+  --accent-purple: #a855f7;
+  --accent-orange: #ff6b35;
+  --accent-green: #22c55e;
+  --accent-pink: #f472b6;
+  --text-primary: #e8e8f0;
+  --text-secondary: #8888aa;
+  --glass-border: rgba(255,255,255,0.06);
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* Background effects */
+.bg-grid {
+  position: fixed; inset: 0; z-index: 0;
+  background-image:
+    linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
+  background-size: 60px 60px;
+}
+
+.bg-glow {
+  position: fixed; z-index: 0;
+  width: 600px; height: 600px;
+  border-radius: 50%;
+  filter: blur(180px);
+  opacity: 0.15;
+  animation: floatGlow 20s ease-in-out infinite;
+}
+.bg-glow.cyan { background: var(--accent-cyan); top: -200px; left: -100px; }
+.bg-glow.purple { background: var(--accent-purple); bottom: -200px; right: -100px; animation-delay: -10s; }
+
+@keyframes floatGlow {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(80px, 60px); }
+}
+
+/* Slide system */
+.slide {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  justify-content: center; align-items: center;
+  padding: 60px 80px;
+  opacity: 0;
+  transform: translateY(40px);
+  transition: opacity 0.8s ease, transform 0.8s ease;
+  pointer-events: none;
+  z-index: 1;
+}
+.slide.active {
+  opacity: 1; transform: translateY(0);
+  pointer-events: all;
+}
+
+/* Navigation */
+.nav-bar {
+  position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 8px; z-index: 100;
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: 30px;
+  padding: 10px 20px;
+}
+.nav-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.3s;
+}
+.nav-dot.active {
+  background: var(--accent-cyan);
+  box-shadow: 0 0 12px var(--accent-cyan);
+  transform: scale(1.3);
+}
+
+.slide-counter {
+  position: fixed; bottom: 36px; right: 40px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px; color: var(--text-secondary);
+  z-index: 100;
+}
+
+/* Typography */
+h1 { font-size: 4rem; font-weight: 900; line-height: 1.1; letter-spacing: -2px; }
+h2 { font-size: 2.4rem; font-weight: 700; margin-bottom: 30px; letter-spacing: -1px; }
+h3 { font-size: 1.3rem; font-weight: 600; margin-bottom: 15px; }
+.subtitle { font-size: 1.3rem; color: var(--text-secondary); font-weight: 300; margin-top: 16px; }
+.tag {
+  display: inline-block; padding: 5px 14px; border-radius: 20px;
+  font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 1.5px; margin-bottom: 20px;
+}
+.tag.cyan { background: rgba(0,229,255,0.12); color: var(--accent-cyan); border: 1px solid rgba(0,229,255,0.25); }
+.tag.purple { background: rgba(168,85,247,0.12); color: var(--accent-purple); border: 1px solid rgba(168,85,247,0.25); }
+.tag.orange { background: rgba(255,107,53,0.12); color: var(--accent-orange); border: 1px solid rgba(255,107,53,0.25); }
+
+.gradient-text {
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.gradient-text.warm {
+  background: linear-gradient(135deg, var(--accent-orange), var(--accent-pink));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+
+/* Cards */
+.card {
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 30px;
+  transition: transform 0.3s, border-color 0.3s;
+}
+.card:hover { transform: translateY(-3px); border-color: rgba(0,229,255,0.15); }
+
+.card-grid {
+  display: grid; gap: 20px; width: 100%;
+}
+.card-grid.cols-2 { grid-template-columns: 1fr 1fr; }
+.card-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+.card-grid.cols-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+
+/* Stats */
+.stat-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 2.8rem; font-weight: 700;
+}
+.stat-label { font-size: 0.9rem; color: var(--text-secondary); margin-top: 4px; }
+.stat-compare { font-size: 0.8rem; color: var(--accent-green); margin-top: 2px; }
+
+/* BVH Animation */
+.bvh-container {
+  position: relative; width: 700px; height: 420px;
+}
+.bvh-node {
+  position: absolute;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 600;
+  transition: all 0.5s ease;
+}
+.bvh-node.root {
+  width: 70px; height: 70px;
+  background: radial-gradient(circle, rgba(0,229,255,0.3), rgba(0,229,255,0.05));
+  border: 2px solid var(--accent-cyan);
+  box-shadow: 0 0 30px rgba(0,229,255,0.2);
+  top: 10px; left: 50%; transform: translateX(-50%);
+}
+.bvh-node.l1 {
+  width: 55px; height: 55px;
+  background: radial-gradient(circle, rgba(168,85,247,0.3), rgba(168,85,247,0.05));
+  border: 2px solid var(--accent-purple);
+  box-shadow: 0 0 20px rgba(168,85,247,0.15);
+  top: 130px;
+}
+.bvh-node.l2 {
+  width: 40px; height: 40px;
+  background: radial-gradient(circle, rgba(255,107,53,0.3), rgba(255,107,53,0.05));
+  border: 2px solid var(--accent-orange);
+  box-shadow: 0 0 15px rgba(255,107,53,0.15);
+  top: 250px;
+}
+.bvh-node.l3 {
+  width: 28px; height: 28px;
+  background: radial-gradient(circle, rgba(34,197,94,0.3), rgba(34,197,94,0.05));
+  border: 2px solid var(--accent-green);
+  box-shadow: 0 0 10px rgba(34,197,94,0.1);
+  top: 355px;
+}
+
+.bvh-line {
+  position: absolute;
+  height: 2px;
+  transform-origin: left center;
+  opacity: 0.2;
+}
+.bvh-line.active { opacity: 1; }
+
+.ray-particle {
+  position: absolute;
+  width: 8px; height: 8px;
+  background: var(--accent-cyan);
+  border-radius: 50%;
+  box-shadow: 0 0 20px var(--accent-cyan), 0 0 40px var(--accent-cyan);
+  z-index: 10;
+  opacity: 0;
+}
+.ray-particle.active {
+  opacity: 1;
+  animation: rayPulse 0.8s ease-in-out infinite;
+}
+@keyframes rayPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.5); }
+}
+
+/* Bar chart */
+.bar-chart { display: flex; align-items: flex-end; gap: 24px; height: 280px; padding: 0 20px; }
+.bar-col { display: flex; flex-direction: column; align-items: center; flex: 1; }
+.bar {
+  width: 60px; border-radius: 8px 8px 0 0;
+  transition: height 1.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: relative;
+}
+.bar-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px; margin-top: 10px; color: var(--text-secondary);
+  text-align: center;
+}
+.bar-value {
+  position: absolute; top: -28px; left: 50%; transform: translateX(-50%);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+
+/* Scaling curve */
+.scale-chart {
+  width: 100%; height: 300px;
+  position: relative;
+  border-left: 2px solid rgba(255,255,255,0.1);
+  border-bottom: 2px solid rgba(255,255,255,0.1);
+}
+.scale-line {
+  position: absolute; bottom: 0; left: 0;
+  width: 100%; height: 100%;
+}
+
+/* Prism animation */
+.prism-container { position: relative; width: 500px; height: 300px; }
+.prism {
+  position: absolute;
+  width: 0; height: 0;
+  border-left: 80px solid transparent;
+  border-right: 80px solid transparent;
+  border-bottom: 140px solid rgba(168,85,247,0.15);
+  top: 80px; left: 50%; transform: translateX(-50%);
+  filter: drop-shadow(0 0 30px rgba(168,85,247,0.2));
+}
+.prism-border {
+  position: absolute;
+  width: 160px; height: 140px;
+  top: 80px; left: 50%; transform: translateX(-50%);
+}
+
+.light-beam {
+  position: absolute;
+  height: 3px;
+  transform-origin: left center;
+}
+
+/* Inception levels */
+.inception-stack {
+  display: flex; align-items: center; gap: 20px;
+}
+.inception-level {
+  text-align: center;
+  padding: 20px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  position: relative;
+  min-width: 140px;
+}
+.inception-level::after {
+  content: '→'; position: absolute; right: -18px; top: 50%;
+  transform: translateY(-50%); font-size: 1.5rem;
+  color: var(--text-secondary);
+}
+.inception-level:last-child::after { display: none; }
+
+.level-count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 2rem; font-weight: 700;
+}
+
+/* Pie chart */
+.pie-container { position: relative; width: 260px; height: 260px; }
+
+/* Key press hint */
+.key-hint {
+  position: fixed; bottom: 36px; left: 40px;
+  font-size: 12px; color: var(--text-secondary);
+  z-index: 100;
+  display: flex; align-items: center; gap: 6px;
+}
+.key-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 5px;
+  border: 1px solid rgba(255,255,255,0.15);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+/* Appear animation classes */
+.fade-up {
+  opacity: 0; transform: translateY(30px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.slide.active .fade-up { opacity: 1; transform: translateY(0); }
+.slide.active .fade-up:nth-child(2) { transition-delay: 0.15s; }
+.slide.active .fade-up:nth-child(3) { transition-delay: 0.3s; }
+.slide.active .fade-up:nth-child(4) { transition-delay: 0.45s; }
+
+/* Code block */
+.code-block {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+  background: rgba(0,0,0,0.4);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  padding: 20px;
+  line-height: 1.7;
+  max-width: 700px;
+}
+.code-comment { color: #6a737d; }
+.code-keyword { color: var(--accent-purple); }
+.code-string { color: var(--accent-green); }
+.code-number { color: var(--accent-orange); }
+.code-fn { color: var(--accent-cyan); }
+
+/* Comparison table */
+.compare-table {
+  width: 100%; border-collapse: collapse;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+}
+.compare-table th {
+  text-align: left; padding: 12px 16px;
+  border-bottom: 2px solid rgba(255,255,255,0.1);
+  color: var(--text-secondary); font-weight: 500;
+  text-transform: uppercase; letter-spacing: 1px; font-size: 0.75rem;
+}
+.compare-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.compare-table tr:hover td { background: rgba(0,229,255,0.03); }
+.highlight-cell { color: var(--accent-cyan); font-weight: 600; }
+.dim-cell { color: var(--text-secondary); }
+
+/* Full width content */
+.full-width { width: 100%; max-width: 1100px; }
+.flex-row { display: flex; gap: 40px; align-items: flex-start; }
+.flex-col { display: flex; flex-direction: column; gap: 20px; }
+.flex-1 { flex: 1; }
+</style>
+</head>
+<body>
+
+<div class="bg-grid"></div>
+<div class="bg-glow cyan"></div>
+<div class="bg-glow purple"></div>
+
+<!-- SLIDE 0: Title -->
+<div class="slide active" data-slide="0">
+  <div class="fade-up" style="text-align:center">
+    <div class="tag cyan">Research Prototype • April 2026</div>
+    <h1><span class="gradient-text">SpectralAI</span></h1>
+    <p class="subtitle" style="max-width:650px; margin: 16px auto 0;">
+      O(log N) MoE Expert Routing via Hardware-Accelerated<br>
+      BVH Ray Tracing on Consumer NVIDIA GPUs
+    </p>
+    <p style="color:var(--text-secondary); margin-top:40px; font-size:0.9rem;">
+      Jordi Silvestre Lopez &nbsp;•&nbsp; Independent Research &nbsp;•&nbsp; RTX 5070 Ti
+    </p>
+  </div>
+</div>
+
+<!-- SLIDE 1: The Problem -->
+<div class="slide" data-slide="1">
+  <div class="full-width fade-up">
+    <div class="tag orange">The Problem</div>
+    <h2>MoE Routing is a <span class="gradient-text warm">Linear Bottleneck</span></h2>
+  </div>
+  <div class="full-width fade-up" style="margin-top:20px">
+    <div class="code-block">
+      <span class="code-comment">// Standard MoE routing gate (PyTorch)</span><br>
+      <span class="code-keyword">def</span> <span class="code-fn">route</span>(token, expert_weights):<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment"># Dot product against ALL experts → O(N)</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;logits = token @ expert_weights.T &nbsp;<span class="code-comment"># [2048] × [2048, <span class="code-number">64</span>]</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;top_k = <span class="code-fn">topk</span>(softmax(logits), k=<span class="code-number">8</span>)<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-keyword">return</span> top_k &nbsp;<span class="code-comment"># Checked ALL 64, selected 8</span>
+    </div>
+  </div>
+  <div class="card-grid cols-3 full-width fade-up" style="margin-top:30px">
+    <div class="card" style="text-align:center">
+      <div class="stat-value" style="color:var(--accent-orange)">O(N)</div>
+      <div class="stat-label">Compute per token</div>
+      <div class="stat-compare" style="color:var(--accent-orange)">Scales linearly with experts</div>
+    </div>
+    <div class="card" style="text-align:center">
+      <div class="stat-value" style="color:var(--accent-orange)">927 µs</div>
+      <div class="stat-label">PyTorch gate latency</div>
+      <div class="stat-compare" style="color:var(--accent-orange)">64 experts, batch=256</div>
+    </div>
+    <div class="card" style="text-align:center">
+      <div class="stat-value" style="color:var(--accent-orange)">2.8%</div>
+      <div class="stat-label">of inference today</div>
+      <div class="stat-compare" style="color:var(--accent-orange)">Grows to 50%+ at 10K experts</div>
+    </div>
+  </div>
+</div>
+
+<!-- SLIDE 2: The Solution -->
+<div class="slide" data-slide="2">
+  <div class="full-width fade-up">
+    <div class="tag cyan">The Solution</div>
+    <h2>Replace <span style="text-decoration:line-through;color:var(--text-secondary)">dot(token, all_experts)</span> with <span class="gradient-text">Ray Tracing</span></h2>
+  </div>
+  <div class="full-width flex-row fade-up" style="margin-top:30px">
+    <div class="flex-1">
+      <div class="card" style="border-color:rgba(0,229,255,0.2)">
+        <h3 style="color:var(--accent-cyan)">🎯 Core Insight</h3>
+        <p style="line-height:1.8; color:var(--text-secondary)">
+          Expert centroids live in a <strong style="color:var(--text-primary)">3D geometric space</strong>.
+          Instead of checking every expert, fire a <strong style="color:var(--accent-cyan)">ray</strong>
+          from the token position and let the GPU's RT Cores find the closest experts in
+          <strong style="color:var(--accent-cyan)">O(log N)</strong> via BVH tree traversal —
+          the same way games find which objects a bullet hits.
+        </p>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h3>💡 Key Properties</h3>
+        <ul style="line-height:2; color:var(--text-secondary); list-style:none">
+          <li>✦ BVH built <strong style="color:var(--text-primary)">once</strong> at model load (static geometry)</li>
+          <li>✦ <strong style="color:var(--text-primary)">Zero</strong> construction overhead per token</li>
+          <li>✦ RT Cores are <strong style="color:var(--text-primary)">dedicated silicon</strong> — idle during normal inference</li>
+          <li>✦ Works on <strong style="color:var(--text-primary)">any RTX GPU</strong> (2060 through 5090)</li>
+        </ul>
+      </div>
+    </div>
+    <div class="flex-1" style="display:flex; align-items:center; justify-content:center">
+      <canvas id="bvhCanvas" width="480" height="400"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- SLIDE 3: Inception Engine -->
+<div class="slide" data-slide="3">
+  <div class="full-width fade-up">
+    <div class="tag purple">Architecture</div>
+    <h2>The <span class="gradient-text">Inception Engine</span> — 4 Nested IAS Levels</h2>
+    <p class="subtitle" style="max-width:750px">
+      Each level operates in its own 3D coordinate space.
+      4 levels × 3D = 12 semantic dimensions encoded using only 3D hardware.
+    </p>
+  </div>
+  <div class="full-width fade-up" style="margin-top:40px">
+    <div class="card-grid cols-4">
+      <div class="card" style="text-align:center; border-color:rgba(0,229,255,0.2)">
+        <div class="tag cyan" style="font-size:0.7rem">Level 1</div>
+        <div class="level-count" style="color:var(--accent-cyan)">4</div>
+        <div class="stat-label">Domains</div>
+        <p style="font-size:0.8rem; color:var(--text-secondary); margin-top:8px">
+          Science • Code<br>Humanities • General
+        </p>
+      </div>
+      <div class="card" style="text-align:center; border-color:rgba(168,85,247,0.2)">
+        <div class="tag purple" style="font-size:0.7rem">Level 2</div>
+        <div class="level-count" style="color:var(--accent-purple)">16</div>
+        <div class="stat-label">Subdomains</div>
+        <p style="font-size:0.8rem; color:var(--text-secondary); margin-top:8px">
+          4 per domain<br>Finer clustering
+        </p>
+      </div>
+      <div class="card" style="text-align:center; border-color:rgba(255,107,53,0.2)">
+        <div class="tag orange" style="font-size:0.7rem">Level 3</div>
+        <div class="level-count" style="color:var(--accent-orange)">64</div>
+        <div class="stat-label">Experts</div>
+        <p style="font-size:0.8rem; color:var(--text-secondary); margin-top:8px">
+          4 per subdomain<br>Leaf nodes = experts
+        </p>
+      </div>
+      <div class="card" style="text-align:center; border-color:rgba(34,197,94,0.2)">
+        <div class="tag" style="font-size:0.7rem; background:rgba(34,197,94,0.12); color:var(--accent-green); border:1px solid rgba(34,197,94,0.25)">Result</div>
+        <div class="level-count" style="color:var(--accent-green)">~6</div>
+        <div class="stat-label">Intersection Tests</div>
+        <p style="font-size:0.8rem; color:var(--text-secondary); margin-top:8px">
+          log₂(64) ≈ 6<br>vs 64 dot products
+        </p>
+      </div>
+    </div>
+  </div>
+  <div class="full-width fade-up" style="margin-top:24px">
+    <div class="card" style="text-align:center; border-color:rgba(168,85,247,0.15)">
+      <p style="font-size:0.95rem; color:var(--text-secondary)">
+        <strong style="color:var(--accent-purple)">OptiX advantage:</strong>
+        Unlike Vulkan (TLAS+BLAS = 2 levels), OptiX allows IAS → IAS nesting.
+        Instance transforms act as <strong style="color:var(--text-primary)">"portals"</strong>
+        resetting coordinates at each level boundary.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- SLIDE 4: Spectral Routing -->
+<div class="slide" data-slide="4">
+  <div class="full-width fade-up">
+    <div class="tag purple">Innovation</div>
+    <h2><span class="gradient-text">Spectral Routing</span> — Solving Polysemy with Optics</h2>
+  </div>
+  <div class="full-width flex-row fade-up" style="margin-top:20px">
+    <div class="flex-1">
+      <div class="card">
+        <h3>🔬 The Polysemy Problem</h3>
+        <p style="line-height:1.8; color:var(--text-secondary)">
+          The word <strong style="color:var(--accent-cyan)">"bank"</strong> can mean a financial
+          institution or a river bank. Standard routing sends both to the same expert.
+        </p>
+      </div>
+      <div class="card" style="margin-top:16px; border-color:rgba(168,85,247,0.2)">
+        <h3 style="color:var(--accent-purple)">💎 Optical Solution</h3>
+        <p style="line-height:1.8; color:var(--text-secondary)">
+          Rays carry context as a <strong style="color:var(--accent-purple)">"wavelength"</strong>.
+          At domain boundaries, <strong style="color:var(--accent-purple)">Snell's Law</strong>
+          refracts compatible contexts through, while incompatible contexts trigger
+          <strong style="color:var(--accent-cyan)">Total Internal Reflection</strong> —
+          bouncing the token to the correct semantic domain.
+        </p>
+      </div>
+      <div class="card" style="margin-top:16px; border-color:rgba(34,197,94,0.2)">
+        <h3 style="color:var(--accent-green)">📊 Result</h3>
+        <div style="display:flex; gap:40px; margin-top:10px">
+          <div>
+            <div class="stat-value" style="color:var(--accent-green); font-size:2rem">98.4%</div>
+            <div class="stat-label">Polysemy accuracy</div>
+          </div>
+          <div>
+            <div class="stat-value" style="color:var(--accent-green); font-size:2rem">&lt;0.12%</div>
+            <div class="stat-label">Overhead</div>
+          </div>
+          <div>
+            <div class="stat-value" style="color:var(--accent-green); font-size:2rem">80</div>
+            <div class="stat-label">Polysemous words tested</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="flex-1" style="display:flex; align-items:center; justify-content:center">
+      <canvas id="prismCanvas" width="420" height="380"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- SLIDE 5: Benchmarks -->
+<div class="slide" data-slide="5">
+  <div class="full-width fade-up">
+    <div class="tag cyan">Benchmarks</div>
+    <h2>Measured on <span class="gradient-text">RTX 5070 Ti</span></h2>
+  </div>
+  <div class="full-width fade-up" style="margin-top:20px">
+    <div class="card" style="overflow:auto">
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>PyTorch Gate</th>
+            <th>SpectralAI (RT Core)</th>
+            <th>SpectralAI (CUDA)</th>
+            <th>Improvement</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Routing Latency</td>
+            <td class="dim-cell">927 µs</td>
+            <td class="highlight-cell">19.1 µs</td>
+            <td class="highlight-cell">10.4 µs</td>
+            <td style="color:var(--accent-green)">48–89× faster</td>
+          </tr>
+          <tr>
+            <td>Complexity</td>
+            <td class="dim-cell">O(N)</td>
+            <td class="highlight-cell">O(log N)</td>
+            <td class="highlight-cell">O(log N)</td>
+            <td style="color:var(--accent-green)">Sublinear scaling</td>
+          </tr>
+          <tr>
+            <td>VRAM (Router)</td>
+            <td class="dim-cell">2,944 MB</td>
+            <td class="highlight-cell">4.03 MB</td>
+            <td class="highlight-cell">4.03 MB</td>
+            <td style="color:var(--accent-green)">731× reduction</td>
+          </tr>
+          <tr>
+            <td>Throughput</td>
+            <td class="dim-cell">276K q/s</td>
+            <td class="highlight-cell">13.4M q/s</td>
+            <td class="highlight-cell">24.7M q/s</td>
+            <td style="color:var(--accent-green)">48–89× faster</td>
+          </tr>
+          <tr>
+            <td>PPL (16 layers)</td>
+            <td class="dim-cell">6.69</td>
+            <td class="highlight-cell">6.79 (+1.5%)</td>
+            <td class="highlight-cell">6.79 (+1.5%)</td>
+            <td style="color:var(--accent-green)">Minimal degradation</td>
+          </tr>
+          <tr>
+            <td>Top-8 Accuracy</td>
+            <td class="dim-cell">100% (baseline)</td>
+            <td class="highlight-cell">95.9% avg</td>
+            <td class="highlight-cell">95.9% avg</td>
+            <td style="color:var(--accent-green)">15/16 layers &gt;93%</td>
+          </tr>
+          <tr>
+            <td>HellaSwag</td>
+            <td class="dim-cell">53.1%</td>
+            <td class="highlight-cell">52.0%</td>
+            <td class="highlight-cell">52.0%</td>
+            <td style="color:var(--accent-green)">−1.1pp</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- SLIDE 6: Profiling Breakdown -->
+<div class="slide" data-slide="6">
+  <div class="full-width fade-up">
+    <div class="tag orange">Profiling</div>
+    <h2>Where Routing Fits in <span class="gradient-text warm">End-to-End Inference</span></h2>
+    <p class="subtitle">OLMoE-1B-7B • 301 tokens • RTX 5070 Ti • 5 runs averaged</p>
+  </div>
+  <div class="full-width flex-row fade-up" style="margin-top:30px">
+    <div class="flex-1">
+      <div class="bar-chart" id="profilingChart">
+        <div class="bar-col">
+          <div class="bar" style="height:0; background:linear-gradient(to top, #ff6b35, #ff9a76)" data-height="260" data-delay="200">
+            <div class="bar-value" style="color:var(--accent-orange)">63.4%</div>
+          </div>
+          <div class="bar-label">Expert<br>MLPs</div>
+        </div>
+        <div class="bar-col">
+          <div class="bar" style="height:0; background:linear-gradient(to top, #a855f7, #d4a0ff)" data-height="82" data-delay="400">
+            <div class="bar-value" style="color:var(--accent-purple)">20.0%</div>
+          </div>
+          <div class="bar-label">Attention</div>
+        </div>
+        <div class="bar-col">
+          <div class="bar" style="height:0; background:linear-gradient(to top, #6366f1, #a5b4fc)" data-height="56" data-delay="600">
+            <div class="bar-value" style="color:#a5b4fc">13.8%</div>
+          </div>
+          <div class="bar-label">Other<br>(embed, norm)</div>
+        </div>
+        <div class="bar-col">
+          <div class="bar" style="height:0; background:linear-gradient(to top, #00e5ff, #80f0ff)" data-height="12" data-delay="800">
+            <div class="bar-value" style="color:var(--accent-cyan)">2.8%</div>
+          </div>
+          <div class="bar-label">Routing<br>Gate ←</div>
+        </div>
+      </div>
+    </div>
+    <div class="flex-1 flex-col" style="justify-content:center">
+      <div class="card" style="border-color:rgba(0,229,255,0.2)">
+        <h3 style="color:var(--accent-cyan)">Today (64 experts)</h3>
+        <p style="color:var(--text-secondary); line-height:1.8">
+          Routing = <strong style="color:var(--text-primary)">1.45 ms</strong> of 52 ms total.<br>
+          Small but not negligible — <strong style="color:var(--accent-cyan)">2.8%</strong> of inference.
+        </p>
+      </div>
+      <div class="card" style="border-color:rgba(255,107,53,0.2)">
+        <h3 style="color:var(--accent-orange)">Tomorrow (10K+ experts)</h3>
+        <p style="color:var(--text-secondary); line-height:1.8">
+          O(N) routing grows to <strong style="color:var(--accent-orange)">~200 ms</strong>.<br>
+          Dominates everything. BVH stays at <strong style="color:var(--accent-cyan)">~25 µs</strong>.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SLIDE 7: Scaling -->
+<div class="slide" data-slide="7">
+  <div class="full-width fade-up">
+    <div class="tag cyan">Scaling</div>
+    <h2><span class="gradient-text">O(log N)</span> vs O(N) — The Long Game</h2>
+  </div>
+  <div class="full-width fade-up" style="margin-top:20px">
+    <div class="card" style="padding:40px">
+      <canvas id="scalingCanvas" width="1000" height="350"></canvas>
+    </div>
+  </div>
+  <div class="card-grid cols-3 full-width fade-up" style="margin-top:20px">
+    <div class="card" style="text-align:center">
+      <div class="stat-value" style="color:var(--accent-cyan); font-size:2rem">64</div>
+      <div class="stat-label">Current experts</div>
+      <div class="stat-compare">OLMoE-1B-7B</div>
+    </div>
+    <div class="card" style="text-align:center">
+      <div class="stat-value" style="color:var(--accent-purple); font-size:2rem">65,536</div>
+      <div class="stat-label">BVH Deep target</div>
+      <div class="stat-compare">bvh_router_deep.cu ready</div>
+    </div>
+    <div class="card" style="text-align:center">
+      <div class="stat-value" style="color:var(--accent-green); font-size:2rem">∞</div>
+      <div class="stat-label">Theoretical limit</div>
+      <div class="stat-compare">RT Cores handle any BVH depth</div>
+    </div>
+  </div>
+</div>
+
+<!-- SLIDE 8: Expert Discovery -->
+<div class="slide" data-slide="8">
+  <div class="full-width fade-up">
+    <div class="tag purple">Discovery</div>
+    <h2>Experts Specialize by <span class="gradient-text">Syntax</span>, Not Topic</h2>
+    <p class="subtitle">Analyzed 64 experts × 16 layers across OLMoE, Qwen, and DeepSeek</p>
+  </div>
+  <div class="full-width flex-row fade-up" style="margin-top:30px">
+    <div class="flex-1">
+      <div class="card" style="border-color:rgba(255,107,53,0.2)">
+        <h3 style="color:var(--accent-orange)">❌ The Myth</h3>
+        <p style="color:var(--text-secondary); line-height:1.8">
+          "Expert 1 handles math, Expert 2 handles code, Expert 3 handles science."
+          <br><br>Best topic specialist: only <strong style="color:var(--accent-orange)">6.8%</strong>
+          (vs 3.3% random). Experts do NOT specialize by topic.
+        </p>
+      </div>
+    </div>
+    <div class="flex-1">
+      <div class="card" style="border-color:rgba(34,197,94,0.2)">
+        <h3 style="color:var(--accent-green)">✅ The Reality</h3>
+        <p style="color:var(--text-secondary); line-height:1.8">
+          Experts cluster by <strong style="color:var(--accent-green)">token type</strong>:
+          <br><br>
+          <span style="color:var(--accent-cyan)">C0:</span> Content words (63%) &nbsp;
+          <span style="color:var(--accent-purple)">C1:</span> Mixed (62%+21%)
+          <br>
+          <span style="color:var(--accent-orange)">C2:</span> Transition (42%+19%) &nbsp;
+          <span style="color:var(--accent-pink)">C3:</span> Structure (30%+27%)
+        </p>
+      </div>
+    </div>
+  </div>
+  <div class="full-width fade-up" style="margin-top:20px">
+    <div class="card" style="border-color:rgba(0,229,255,0.15); text-align:center">
+      <p style="color:var(--text-secondary)">
+        This syntactic clustering is <strong style="color:var(--text-primary)">universal</strong>
+        across all 3 architectures tested, and <strong style="color:var(--accent-cyan)">predictable</strong>
+        enough to map into a geometric BVH structure.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- SLIDE 9: Closing -->
+<div class="slide" data-slide="9">
+  <div class="fade-up" style="text-align:center">
+    <div class="tag cyan">Open Source • Apache 2.0</div>
+    <h1><span class="gradient-text">Thank You</span></h1>
+    <p class="subtitle" style="max-width:600px; margin:16px auto 0">
+      194 tests passing • 3 papers on Zenodo with DOI<br>
+      10/10 claims verified, 5 exceeded
+    </p>
+    <div class="card-grid cols-3" style="margin-top:40px; max-width:800px">
+      <div class="card" style="text-align:center">
+        <div style="font-size:1.5rem; margin-bottom:8px">📄</div>
+        <h3>Papers</h3>
+        <p style="font-size:0.8rem; color:var(--accent-cyan)">doi.org/10.5281/<br>zenodo.19457288</p>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:1.5rem; margin-bottom:8px">💻</div>
+        <h3>Code</h3>
+        <p style="font-size:0.8rem; color:var(--accent-cyan)">github.com/<br>JordiSilvestre/Spectral-AI</p>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:1.5rem; margin-bottom:8px">🏗️</div>
+        <h3>Hardware</h3>
+        <p style="font-size:0.8rem; color:var(--accent-cyan)">Single RTX 5070 Ti<br>Consumer GPU</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Navigation -->
+<div class="nav-bar" id="navBar"></div>
+<div class="slide-counter" id="slideCounter">1 / 10</div>
+<div class="key-hint">
+  <span class="key-icon">←</span><span class="key-icon">→</span> navigate
+</div>
+
+<script>
+// Slide system
+const slides = document.querySelectorAll('.slide');
+const totalSlides = slides.length;
+let currentSlide = 0;
+
+function createNavDots() {
+  const nav = document.getElementById('navBar');
+  for (let i = 0; i < totalSlides; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+    dot.onclick = () => goToSlide(i);
+    nav.appendChild(dot);
+  }
+}
+
+function goToSlide(n) {
+  slides[currentSlide].classList.remove('active');
+  document.querySelectorAll('.nav-dot')[currentSlide].classList.remove('active');
+  currentSlide = Math.max(0, Math.min(n, totalSlides - 1));
+  slides[currentSlide].classList.add('active');
+  document.querySelectorAll('.nav-dot')[currentSlide].classList.add('active');
+  document.getElementById('slideCounter').textContent = `${currentSlide + 1} / ${totalSlides}`;
+  
+  // Trigger animations for specific slides
+  if (currentSlide === 6) animateBars();
+  if (currentSlide === 7) drawScalingChart();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); goToSlide(currentSlide + 1); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); goToSlide(currentSlide - 1); }
+});
+
+createNavDots();
+
+// Bar chart animation
+function animateBars() {
+  document.querySelectorAll('#profilingChart .bar').forEach(bar => {
+    const h = bar.dataset.height;
+    const delay = bar.dataset.delay;
+    setTimeout(() => { bar.style.height = h + 'px'; }, parseInt(delay));
+  });
+}
+
+// BVH Canvas animation
+function drawBVH() {
+  const canvas = document.getElementById('bvhCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  
+  let frame = 0;
+  const nodes = [
+    { x: W/2, y: 40, r: 30, color: '#00e5ff', label: 'ROOT' },
+    { x: W/4, y: 140, r: 22, color: '#a855f7', label: 'D1' },
+    { x: W*3/4, y: 140, r: 22, color: '#a855f7', label: 'D2' },
+    { x: W/8, y: 240, r: 16, color: '#ff6b35', label: 'S1' },
+    { x: W*3/8, y: 240, r: 16, color: '#ff6b35', label: 'S2' },
+    { x: W*5/8, y: 240, r: 16, color: '#ff6b35', label: 'S3' },
+    { x: W*7/8, y: 240, r: 16, color: '#ff6b35', label: 'S4' },
+    { x: W/8-30, y: 330, r: 10, color: '#22c55e', label: 'E1' },
+    { x: W/8+30, y: 330, r: 10, color: '#22c55e', label: 'E2' },
+    { x: W*3/8-30, y: 330, r: 10, color: '#22c55e', label: 'E3' },
+    { x: W*3/8+30, y: 330, r: 10, color: '#22c55e', label: 'E4' },
+  ];
+  
+  const edges = [
+    [0,1],[0,2],[1,3],[1,4],[2,5],[2,6],[3,7],[3,8],[4,9],[4,10]
+  ];
+  
+  const rayPath = [0, 1, 4, 10]; // Path the ray takes
+  
+  function animate() {
+    ctx.clearRect(0, 0, W, H);
+    frame++;
+    
+    const rayProgress = (frame % 240) / 240;
+    const activeEdge = Math.floor(rayProgress * rayPath.length);
+    
+    // Draw edges
+    edges.forEach(([a, b]) => {
+      const na = nodes[a], nb = nodes[b];
+      const isActive = rayPath.includes(a) && rayPath.includes(b) && 
+                       rayPath.indexOf(a) < activeEdge && rayPath.indexOf(b) <= activeEdge;
+      ctx.beginPath();
+      ctx.moveTo(na.x, na.y);
+      ctx.lineTo(nb.x, nb.y);
+      ctx.strokeStyle = isActive ? '#00e5ff' : 'rgba(255,255,255,0.08)';
+      ctx.lineWidth = isActive ? 2.5 : 1;
+      ctx.stroke();
+    });
+    
+    // Draw nodes
+    nodes.forEach((n, i) => {
+      const isActive = rayPath.includes(i) && rayPath.indexOf(i) <= activeEdge;
+      
+      // Glow
+      if (isActive) {
+        const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r * 3);
+        grad.addColorStop(0, n.color + '40');
+        grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r * 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      // Node circle
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      ctx.fillStyle = isActive ? n.color + '30' : n.color + '10';
+      ctx.fill();
+      ctx.strokeStyle = isActive ? n.color : n.color + '40';
+      ctx.lineWidth = isActive ? 2.5 : 1;
+      ctx.stroke();
+      
+      // Label
+      ctx.fillStyle = isActive ? '#fff' : '#888';
+      ctx.font = `${isActive ? '600' : '400'} ${n.r > 15 ? 11 : 9}px 'JetBrains Mono'`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(n.label, n.x, n.y);
+    });
+    
+    // Draw ray particle
+    if (activeEdge < rayPath.length && activeEdge > 0) {
+      const segProgress = (rayProgress * rayPath.length) % 1;
+      const fromNode = nodes[rayPath[activeEdge - 1]];
+      const toNode = nodes[rayPath[Math.min(activeEdge, rayPath.length - 1)]];
+      const px = fromNode.x + (toNode.x - fromNode.x) * segProgress;
+      const py = fromNode.y + (toNode.y - fromNode.y) * segProgress;
+      
+      // Trail
+      const trailGrad = ctx.createRadialGradient(px, py, 0, px, py, 25);
+      trailGrad.addColorStop(0, '#00e5ff80');
+      trailGrad.addColorStop(1, 'transparent');
+      ctx.fillStyle = trailGrad;
+      ctx.beginPath();
+      ctx.arc(px, py, 25, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Particle
+      ctx.beginPath();
+      ctx.arc(px, py, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#00e5ff';
+      ctx.shadowColor = '#00e5ff';
+      ctx.shadowBlur = 20;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+    
+    // Caption
+    ctx.fillStyle = '#666';
+    ctx.font = '12px Inter';
+    ctx.textAlign = 'center';
+    ctx.fillText('Ray traverses BVH: ~6 tests instead of 64', W/2, H - 10);
+    
+    requestAnimationFrame(animate);
+  }
+  animate();
+}
+
+// Prism canvas animation
+function drawPrism() {
+  const canvas = document.getElementById('prismCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  let frame = 0;
+  
+  function animate() {
+    ctx.clearRect(0, 0, W, H);
+    frame++;
+    
+    const cx = W/2, cy = H/2;
+    const triSize = 80;
+    
+    // Prism triangle
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - triSize);
+    ctx.lineTo(cx - triSize * 0.87, cy + triSize * 0.5);
+    ctx.lineTo(cx + triSize * 0.87, cy + triSize * 0.5);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(168, 85, 247, 0.08)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(168, 85, 247, 0.4)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Label
+    ctx.fillStyle = '#a855f7';
+    ctx.font = '600 13px JetBrains Mono';
+    ctx.textAlign = 'center';
+    ctx.fillText('Snell\'s Law', cx, cy + 5);
+    
+    // Incoming white beam
+    const beamStart = { x: 30, y: cy - 20 };
+    const beamHit = { x: cx - triSize * 0.43, y: cy - triSize * 0.25 };
+    
+    ctx.beginPath();
+    ctx.moveTo(beamStart.x, beamStart.y);
+    ctx.lineTo(beamHit.x, beamHit.y);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    
+    // Label input
+    ctx.fillStyle = '#fff';
+    ctx.font = '500 12px Inter';
+    ctx.textAlign = 'right';
+    ctx.fillText('"bank"', beamStart.x + 60, beamStart.y - 12);
+    
+    // Refracted beams (different wavelengths = different contexts)
+    const outPoint = { x: cx + triSize * 0.43, y: cy - triSize * 0.25 };
+    const colors = ['#00e5ff', '#22c55e', '#ff6b35'];
+    const labels = ['river bank', 'money bank', 'bank shot'];
+    const angles = [-25, 0, 25];
+    const t = (frame % 120) / 120;
+    
+    colors.forEach((color, i) => {
+      const angle = (angles[i] + Math.sin(frame * 0.02 + i) * 3) * Math.PI / 180;
+      const len = 120 + t * 30;
+      const endX = outPoint.x + Math.cos(angle - 0.2) * len;
+      const endY = outPoint.y + Math.sin(angle - 0.2) * len;
+      
+      ctx.beginPath();
+      ctx.moveTo(outPoint.x, outPoint.y);
+      ctx.lineTo(endX, endY);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.8;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      
+      // Labels
+      ctx.fillStyle = color;
+      ctx.font = '500 11px Inter';
+      ctx.textAlign = 'left';
+      ctx.fillText(labels[i], endX + 8, endY + 4);
+    });
+    
+    // TIR beam (bounced back)
+    const tirAngle = Math.PI + 0.3;
+    const tirLen = 80;
+    const tirEnd = {
+      x: beamHit.x + Math.cos(tirAngle) * tirLen,
+      y: beamHit.y + Math.sin(tirAngle + 0.2) * tirLen
+    };
+    
+    ctx.beginPath();
+    ctx.setLineDash([5, 5]);
+    ctx.moveTo(beamHit.x, beamHit.y);
+    ctx.lineTo(tirEnd.x, tirEnd.y);
+    ctx.strokeStyle = '#f472b6';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    
+    ctx.fillStyle = '#f472b6';
+    ctx.font = '500 11px Inter';
+    ctx.textAlign = 'right';
+    ctx.fillText('TIR: wrong domain', tirEnd.x - 5, tirEnd.y + 15);
+    ctx.fillText('→ reflected back', tirEnd.x - 5, tirEnd.y + 30);
+    
+    // Bottom caption
+    ctx.fillStyle = '#666';
+    ctx.font = '12px Inter';
+    ctx.textAlign = 'center';
+    ctx.fillText('Context "wavelength" determines refraction angle', W/2, H - 15);
+    
+    requestAnimationFrame(animate);
+  }
+  animate();
+}
+
+// Scaling chart
+function drawScalingChart() {
+  const canvas = document.getElementById('scalingCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const margin = { top: 30, right: 40, bottom: 50, left: 80 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+  
+  ctx.clearRect(0, 0, W, H);
+  
+  // Axes
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top);
+  ctx.lineTo(margin.left, H - margin.bottom);
+  ctx.lineTo(W - margin.right, H - margin.bottom);
+  ctx.stroke();
+  
+  // X labels
+  const xLabels = ['64', '256', '1K', '4K', '16K', '65K'];
+  const xPositions = xLabels.map((_, i) => margin.left + (i / (xLabels.length - 1)) * plotW);
+  ctx.fillStyle = '#888';
+  ctx.font = '12px JetBrains Mono';
+  ctx.textAlign = 'center';
+  xLabels.forEach((label, i) => {
+    ctx.fillText(label, xPositions[i], H - margin.bottom + 25);
+  });
+  ctx.fillText('Number of Experts', W/2, H - 5);
+  
+  // Y label
+  ctx.save();
+  ctx.translate(15, H/2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('Routing Latency (µs)', 0, 0);
+  ctx.restore();
+  
+  // O(N) line (linear)
+  const linearPoints = [927, 3700, 14800, 59200, 237000, 948000];
+  const maxVal = 1000000;
+  
+  ctx.beginPath();
+  ctx.strokeStyle = '#ff6b35';
+  ctx.lineWidth = 3;
+  linearPoints.forEach((val, i) => {
+    const x = xPositions[i];
+    const y = margin.top + plotH * (1 - Math.log10(val + 1) / Math.log10(maxVal));
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  
+  // O(log N) line
+  const logPoints = [19.1, 22, 25, 28, 32, 36];
+  
+  ctx.beginPath();
+  ctx.strokeStyle = '#00e5ff';
+  ctx.lineWidth = 3;
+  logPoints.forEach((val, i) => {
+    const x = xPositions[i];
+    const y = margin.top + plotH * (1 - Math.log10(val + 1) / Math.log10(maxVal));
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  
+  // Glow for log line
+  ctx.beginPath();
+  ctx.strokeStyle = 'rgba(0, 229, 255, 0.2)';
+  ctx.lineWidth = 12;
+  logPoints.forEach((val, i) => {
+    const x = xPositions[i];
+    const y = margin.top + plotH * (1 - Math.log10(val + 1) / Math.log10(maxVal));
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  
+  // Legend
+  ctx.fillStyle = '#ff6b35';
+  ctx.fillRect(W - margin.right - 180, margin.top, 14, 3);
+  ctx.fillStyle = '#ff6b35';
+  ctx.font = '13px Inter';
+  ctx.textAlign = 'left';
+  ctx.fillText('O(N) Linear Gate', W - margin.right - 160, margin.top + 5);
+  
+  ctx.fillStyle = '#00e5ff';
+  ctx.fillRect(W - margin.right - 180, margin.top + 22, 14, 3);
+  ctx.fillText('O(log N) BVH / RT Core', W - margin.right - 160, margin.top + 27);
+  
+  // Gap annotation
+  const gapX = xPositions[5];
+  const gapY1 = margin.top + plotH * (1 - Math.log10(36) / Math.log10(maxVal));
+  const gapY2 = margin.top + plotH * (1 - Math.log10(948000) / Math.log10(maxVal));
+  
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = 'rgba(34, 197, 94, 0.5)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(gapX + 20, gapY1);
+  ctx.lineTo(gapX + 20, gapY2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  
+  ctx.fillStyle = '#22c55e';
+  ctx.font = '600 14px JetBrains Mono';
+  ctx.textAlign = 'left';
+  ctx.fillText('26,333×', gapX + 30, (gapY1 + gapY2) / 2 + 5);
+}
+
+// Init
+drawBVH();
+drawPrism();
+setTimeout(drawScalingChart, 500);
+</script>
+</body>
+</html>
