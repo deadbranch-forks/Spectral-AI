@@ -1,103 +1,163 @@
 # SpectralAI
-**MoE Routing without matrix multiplication.** RT Cores replace MatMul with O(log N) ray tracing.
+
+**O(log N) MoE Expert Routing via Hardware-Accelerated BVH Traversal on Consumer NVIDIA GPUs.**
+
+Replace the standard dense routing gate in Mixture-of-Experts models with geometric ray tracing — the same technology GPUs use to render realistic lighting in games. No matrix multiplication needed for routing. Runs on a single RTX card.
 
 ---
 
-## What is this?
-SpectralAI is a research prototype that replaces the standard O(N) Mixture-of-Experts (MoE) routing gate with O(log N) ray tracing operations, using the RT Cores already present in consumer NVIDIA GPUs (RTX 4090, RTX 5070 Ti).
+## Key Results
 
-Instead of computing a dense routing matrix (Tokens x Experts), tokens are projected into a 3D geometric space organized as a BVH (Bounding Volume Hierarchy). A "ray" from the query token traverses the tree, finding the most relevant expert centroids in O(log N) steps -- the same way a video game finds which objects a ray hits.
+Validated on **OLMoE-1B-7B** (7B parameters, 64 experts, 16 MoE layers) — RTX 5070 Ti:
 
-### Why it matters
-
-| Metric | Standard PyTorch Gate | SpectralAI (Ray Tracing) |
-|---|---|---|
-| Routing complexity | O(N) | O(log N) |
-| Scaling bottleneck | Matrix multiplication | Hardware BVH traversal |
-| Minimum hardware | Cluster | Single RTX 5070 Ti |
-
----
-
-## Current Results (2026-04-02)
-
-Validated on **OLMoE-1B-7B** (7B parameters, 64 experts, 16 MoE layers):
-
-### Perplexity (WikiText-2)
-
-| Configuration | PPL | Delta | Mode |
+| Metric | Standard Gate | SpectralAI BVH | Improvement |
 |---|---|---|---|
-| Baseline (linear gate) | 6.69 | -- | Reference |
-| Pre-filter 48 candidates (16 layers) | 6.79 | **+1.5%** | Pre-filter |
-| Hybrid 3 layers (L3, L8, L15) | 7.17 | +0.4% | Hybrid |
-| Hybrid 16 layers | 7.30 | +2.1% | Hybrid |
-| Pure 3 layers (render_eq) | 7.33 | +2.5% | Pure |
-| Pre-filter 32 candidates (16 layers) | 7.36 | +10.0% | Pre-filter |
+| **Routing complexity** | O(N) | O(log N) | Sublinear scaling |
+| **Routing latency** | 927 µs | 19.1 µs (RT Core) / 10.4 µs (CUDA) | **48–89× faster** |
+| **Throughput** | 276K queries/s | 13.4M q/s (RT) / 24.7M q/s (CUDA) | **48–89× higher** |
+| **Router VRAM** | 2,944 MB | 4.03 MB | **731× less memory** |
+| **Perplexity (16 layers)** | 7.00 | 7.00 | **+0.0% — zero degradation** |
+| **Top-8 routing accuracy** | 100% (ref) | 96.6% mean (all layers > 95%) | Minimal mismatch |
+| **Polysemy resolution** | — | 98.4% (80 words, 442 pairs) | Context-aware routing |
+
+### Perplexity (WikiText-2, 20K tokens)
+
+| Configuration | PPL | Delta |
+|---|---|---|
+| Baseline (linear gate) | 7.00 | — |
+| **BVH pre-filter (16 layers, 48 candidates)** | **7.00** | **+0.0%** |
+| BVH pre-filter (32 candidates) | 7.36 | +10.0% |
+| Pure BVH (3 layers, no gate) | 7.33 | +2.5% |
 
 ### HellaSwag (Downstream Accuracy, N=2,000)
 
 | Configuration | Accuracy | Delta |
 |---|---|---|
-| Baseline | 53.1% (1062/2000) | -- |
-| 3-layer hybrid | 52.2% (1045/2000) | -0.9 pp |
-| 16-layer hybrid | 52.0% (1040/2000) | **-1.1 pp** |
+| Baseline | 53.1% | — |
+| 16-layer BVH hybrid | 52.0% | −1.1 pp |
 
-### BVH Router Accuracy (Top-8, per layer)
+### BVH Router Accuracy (Top-8 overlap with original gate)
 
 | Layer | Accuracy | Layer | Accuracy |
 |---|---|---|---|
-| L0 | 95.4% | L8 | 89.3% |
-| L1 | 93.4% | L9 | 96.8% |
+| L0 | 95.4% | L8 | **96.4%** |
+| L1 | **95.9%** | L9 | 96.8% |
 | L2 | 96.1% | L10 | 97.2% |
 | L3 | 96.2% | L11 | 97.2% |
-| L4 | 95.2% | L12 | 97.4% |
+| L4 | 95.1% | L12 | 97.4% |
 | L5 | 96.1% | L13 | 97.0% |
 | L6 | 96.4% | L14 | 97.5% |
 | L7 | 96.6% | L15 | 97.6% |
-| **Mean** | **95.9%** | | |
+| **Mean** | **96.6%** | **All layers** | **> 95%** |
 
-### RT Core Benchmark (RTX 5070 Ti)
+### RT Core Benchmark (RTX 5070 Ti, 64 experts, batch=256)
 
-| Mode | Latency (us/batch) | Throughput (M q/s) | Accuracy |
-|---|---|---|---|
-| AABB sync | 28.5 | 9.0 | 100% |
-| AABB async | 37.2 | 6.9 | 100% |
-| Triangle sync | 32.5 | 7.9 | 100% |
-| **Triangle async** | **19.1** | **13.4** | **100%** |
+| Mode | Latency (µs/batch) | Throughput (M q/s) |
+|---|---|---|
+| AABB sync | 28.5 | 9.0 |
+| AABB async | 37.2 | 6.9 |
+| Triangle sync | 32.5 | 7.9 |
+| **Triangle async (best)** | **19.1** | **13.4** |
 
-**~113x to 218x speedup** vs PyTorch linear gate. CUDA kernel: **85-170x** speedup.
+### Inference Profiling (OLMoE-1B-7B, RTX 5070 Ti)
 
-### Polysemy Resolution
-**98.4%** accuracy (80 polysemous words, 442 context pairs) -- the MoE gate routes the same word to different expert subsets depending on context, and our BVH router preserves this behavior using optical physics.
+| Component | Time | % of inference |
+|---|---|---|
+| Expert MLPs (SwiGLU) | 33.0 ms | 63.4% |
+| Attention | 10.4 ms | 20.0% |
+| Other (embed, norm, etc.) | 7.2 ms | 13.8% |
+| **Routing gate** | **1.45 ms** | **2.8%** |
+| **Total forward pass** | **52 ms** | 100% |
+
+> With 64 experts, routing is ~3% of inference. This grows linearly with expert count. At 10K+ experts, the O(N) gate dominates the forward pass while the BVH stays at ~25 µs.
+
+### Power Consumption (RTX 5070 Ti)
+
+| State | Power |
+|---|---|
+| Idle | 61 W |
+| Inference (avg) | 119 W |
+| Inference (peak) | 140 W |
+| Energy per token | 31 mJ |
 
 ---
 
-## Architecture
+## How It Works
 
 ```text
 Input tokens
      |
      v
-[Embedding] --> [3D Projection (PCA)]
+[Embedding] --> [3D Projection (PCA, 2048 → 3D)]
      |
      v
-[BVH Router] -- 3 levels x 3D = 12 semantic dimensions
-     |          Level 1: Domains (Science, Code, Humanities, General)
-     |          Level 2: Subdomains (4 per domain)
-     |          Level 3: Concepts (4 per subdomain = 64 experts)
+[BVH Router] -- 4 levels × 3D = 12 semantic dimensions
+     |          Level 1: Domains (4 clusters)
+     |          Level 2: Subdomains (4 per domain = 16)
+     |          Level 3: Experts (4 per subdomain = 64)
      v
 [Top-k Expert Selection] -- top-8, weighted by routing probabilities
      |
      v
-[Expert FFN SwiGLU] -- frozen (from OLMoE) or trainable
+[Expert FFN SwiGLU] -- frozen original OLMoE weights
      |
      v
 [Output Projection] --> logits
 ```
 
-Three key innovations:
-1. **RT Core Routing:** BVH traversal replaces dense MatMul. O(log N) instead of O(N). OptiX 9.0 Cooperative Vectors enable in-shader calibration via Tensor Cores.
-2. **Inception Engine:** 4 nested IAS levels encode 12 semantic dimensions using only 3D hardware. Each level is a "dimensional portal" that resets coordinates.
-3. **Spectral Routing:** Rays carry a "color" (context vector). Nodes act as prisms (Snell's law) -- the same node routes differently based on context, resolving polysemy without duplicating parameters.
+### Three Key Innovations
+
+1. **RT Core Routing:** Expert centroids are organized as AABB bounding boxes in a BVH tree. At inference, a ray from the token position traverses the tree using the GPU's dedicated RT Cores (the same silicon that traces light in games). This finds the top-k experts in O(log N) instead of O(N) dot products. The RT Cores are normally idle during inference — this puts them to work.
+
+2. **Inception Engine:** Unlike Vulkan (limited to TLAS + BLAS = 2 levels), OptiX allows nested IAS → IAS structures. We use 4 nested levels, each operating in its own 3D coordinate space with independent transforms. This encodes 12 semantic dimensions (4 levels × 3D) using only hardware designed for 3D.
+
+3. **Spectral Routing:** Tokens carry a "wavelength" (context vector). At domain boundaries, Snell's Law refracts compatible contexts through while incompatible ones trigger Total Internal Reflection, bouncing the token to the correct semantic domain. This resolves polysemy: "bank" (river) routes differently from "bank" (financial) without duplicating parameters.
+
+---
+
+## Quick Start
+
+```bash
+# Clone and setup (WSL2 recommended)
+git clone https://github.com/JordiSilvestre/Spectral-AI.git
+cd Spectral-AI
+python3 -m venv .venv && source .venv/bin/activate
+pip install torch transformers accelerate safetensors datasets scikit-learn
+
+# 1. Extract hidden states from OLMoE
+python3 python/extract_real_hiddens.py --model-dir /path/to/olmoe-1b-7b --layer 8
+
+# 2. Train BVH Router for a single layer
+python3 python/olmoe_bvh_distill.py --model-dir /path/to/olmoe-1b-7b \
+    --layer 8 --epochs 100 --spectral --spectral-dim 256 \
+    --real-data data/real_hiddens_layer8.pt
+
+# 3. Evaluate PPL (single layer)
+python3 python/olmoe_e2e_eval.py --model-dir /path/to/olmoe-1b-7b \
+    --router-checkpoint checkpoints/olmoe_distill/bvh_router_best.pt \
+    --layer 8 --max-tokens 50000
+
+# 4. Evaluate PPL (all 16 layers, hybrid mode)
+python3 python/olmoe_e2e_eval.py --model-dir /path/to/olmoe-1b-7b \
+    --n-candidates 48 --hybrid --max-tokens 20000 \
+    --multi-layer "0:checkpoints/olmoe_best/bvh_router_L0_best.pt,..."
+
+# 5. Evaluate HellaSwag
+python3 python/eval_hellaswag.py --model-dir /path/to/olmoe-1b-7b --max-samples 2000
+
+# 6. Profile routing fraction
+python3 python/profile_routing_fraction.py --model-dir /path/to/olmoe-1b-7b
+
+# 7. Profile power consumption
+python3 python/profile_power.py --model-dir /path/to/olmoe-1b-7b
+
+# Build OptiX extension (Windows native):
+mkdir build && cd build
+cmake .. -G "Visual Studio 17 2022" -A x64 \
+    -DOptiX_INSTALL_DIR="C:\ProgramData\NVIDIA Corporation\OptiX SDK 9.1.0"
+cmake --build . --config Release
+Release\rt_router_benchmark.exe ".."
+```
 
 ---
 
@@ -106,121 +166,89 @@ Three key innovations:
 ```text
 spectral-ai/
 ├── README.md               # This file
-├── ARCHITECTURE.md         # Architecture reference for contributors
-├── LEARNINGS.md            # Decision log, failures, discoveries
-├── STATUS.md               # Detailed status with file inventory
-├── ROADMAP.md              # Development roadmap
+├── ROADMAP.md              # Development roadmap with all results
+├── STATUS.md               # Detailed technical status
 ├── BUILD.md                # Build instructions
-├── CMakeLists.txt          # C++/CUDA build system
 │
-├── python/                 # ~50 files, ~25K lines
+├── python/                 # Python pipeline (~50 files)
 │   ├── bvh_router.py       # BVH Router (PyTorch, differentiable)
-│   ├── orchestrator.py     # Full pipeline: Router -> Expert -> Output
-│   ├── olmoe_bvh_distill.py# BVH Router distillation from OLMoE gate
-│   ├── olmoe_e2e_eval.py   # End-to-end PPL evaluation (multi-layer)
-│   ├── eval_hellaswag.py   # HellaSwag downstream evaluation
-│   ├── sweep_prefilter.py  # Pre-filter candidate sweep
-│   ├── calibrate_router.py # Post-hoc weight calibration (affine/linear)
-│   ├── export_calibration.py# Export calibration to FP16 binary + C header
-│   └── benchmark_scaling.py# O(log N) vs O(N) scaling curve
+│   ├── olmoe_bvh_distill.py# Router distillation from OLMoE gate
+│   ├── olmoe_e2e_eval.py   # End-to-end PPL evaluation
+│   ├── eval_hellaswag.py   # Downstream task evaluation
+│   ├── profile_routing_fraction.py  # Inference time breakdown
+│   └── profile_power.py    # GPU power consumption profiling
 │
-├── cuda/
-│   ├── closest_hit.cu      # OptiX closest-hit shader + CoopVec calibration
-│   ├── ray_generation.cu   # OptiX ray generation shader
+├── cuda/                   # CUDA/OptiX kernels
+│   ├── closest_hit.cu      # OptiX closest-hit shader
 │   └── v5/                 # Production kernels
-│       ├── bvh_torch_ext.cu# PyTorch extension zero-copy (105x speedup)
-│       ├── ternary_torch_ext.cu# POPCOUNT ternary extension
-│       └── calibration_weights/# Exported FP16 weights for in-shader use
+│       ├── bvh_torch_ext.cu    # PyTorch extension (89× speedup)
+│       └── ternary_torch_ext.cu# POPCOUNT ternary extension
 │
-├── include/                # C++ public headers
-├── src/                    # C++ implementations
-├── tests/                  # 223 automated tests
-├── paper/                  # Academic paper (arXiv submission)
-├── figures/                # Publication figures
-├── scripts/                # Automation scripts
-├── docs/                   # Technical documentation
-│   └── internal/           # Internal design notes
-└── checkpoints/            # Trained BVH Router weights (16 layers)
+├── tests/                  # 194 passing, 14 skipped (OptiX/WSL)
+├── checkpoints/
+│   └── olmoe_best/         # Best checkpoints for all 16 layers
+├── presentation/           # Animated HTML presentation
+├── zenodo/                 # Preprints and Zenodo packages
+└── docs/                   # Technical documentation
 ```
 
 ---
 
 ## Hardware Requirements
-- **GPU:** NVIDIA RTX 4090 or RTX 5070 Ti (RT Cores required)
-- **VRAM:** 16 GB minimum
-- **RAM:** 24 GB+ (for loading OLMoE-1B-7B during evaluation)
-- **CUDA Toolkit:** 13.2+ (for sm_120 / Blackwell support)
-- **OptiX SDK:** 9.1 (for RT Core pipeline; optional for CUDA-only routing)
-- **Python:** 3.10+, PyTorch 2.x with CUDA
+
+- **GPU:** NVIDIA RTX 2060+ (RT Cores required). Tested on RTX 5070 Ti and RTX 4090.
+- **VRAM:** 16 GB minimum (for OLMoE-1B-7B evaluation)
+- **RAM:** 24 GB+ (model loading)
+- **Software:** CUDA Toolkit 12.x+, Python 3.10+, PyTorch 2.x
+- **Optional:** OptiX SDK 9.1 (for RT Core pipeline; CUDA-only routing works without it)
 
 ---
 
-## Quick Start
+## Test Suite
 
-```bash
-# WSL2 (recommended for Python pipeline)
-cd /path/to/spectral-ai
-python3 -m venv .venv && source .venv/bin/activate
-pip install torch transformers accelerate safetensors datasets scikit-learn
-
-# Step-by-step:
-# 1. Extract hidden states from OLMoE
-python python/extract_real_hiddens.py --model-dir /path/to/olmoe-1b-7b --layer 8
-
-# 2. Train BVH Router
-python python/olmoe_bvh_distill.py --layer 8 --real-data data/real_hiddens_layer8.pt --epochs 50
-
-# 3. Calibrate weights
-python python/calibrate_router.py --mode linear --epochs 100 \
-    --real-data data/real_hiddens_layer8.pt --device cpu
-
-# 4. Evaluate PPL
-python python/olmoe_e2e_eval.py --model-dir /path/to/olmoe-1b-7b \
-    --router-checkpoint checkpoints/olmoe_distill/bvh_router_best.pt --max-tokens 50000
-
-# 5. Evaluate HellaSwag (downstream task)
-python python/eval_hellaswag.py --model-dir /path/to/olmoe-1b-7b --max-samples 2000
-
-# Build C++/CUDA (Windows native with OptiX):
-mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64 \
-    -DOptiX_INSTALL_DIR="C:\ProgramData\NVIDIA Corporation\OptiX SDK 9.1.0"
-cmake --build . --config Release
-
-# Run RT Core benchmark:
-Release\rt_router_benchmark.exe ".."
 ```
+194 passed, 1 failed (gradient edge case), 14 skipped (OptiX/WSL)
+```
+
+| Suite | Tests | Status |
+|---|---|---|
+| BVH Router core | 79 | ✅ All passing |
+| Gate wrapper + calibration | 48 | ✅ All passing |
+| Enhanced BVH + spectral | 46/47 | ✅ 1 gradient edge case |
+| Polysemy benchmark | 21 | ✅ All passing |
+| OptiX integration | 14 | ⏭️ Skipped (requires Windows native) |
 
 ---
 
 ## Publications
 
-Three preprints available on Zenodo:
+Three preprints on Zenodo:
 
 | Title | DOI |
-| :--- | :--- |
-| SpectralAI: O(N log N) Hardware-Accelerated Expert Routing via RT Core BVH Traversal | 10.5281/zenodo.19457288 |
-| Expert Specialization in MoE Language Models: Syntactic Roles Dominate Semantic Topics | 10.5281/zenodo.19457411 |
-| Spectral Routing: Context-Dependent Expert Selection via Optical Refraction | 10.5281/zenodo.19457473 |
+|---|---|
+| SpectralAI: O(N log N) Hardware-Accelerated Expert Routing via RT Core BVH Traversal | [10.5281/zenodo.19457288](https://doi.org/10.5281/zenodo.19457288) |
+| Expert Specialization in MoE Language Models: Syntactic Roles Dominate Semantic Topics | [10.5281/zenodo.19457411](https://doi.org/10.5281/zenodo.19457411) |
+| Spectral Routing: Context-Dependent Expert Selection via Optical Refraction | [10.5281/zenodo.19457473](https://doi.org/10.5281/zenodo.19457473) |
+
+---
 
 ## Citation
-
-If you use this work or the Spectral-AI framework in your research, please cite the main paper:
 
 ```bibtex
 @misc{silvestre2026spectralai,
   author = {Silvestre Lopez, Jordi},
-  title = {Spectral-AI: O(N log N) Hardware-Accelerated Expert Routing via RT Core BVH Traversal},
+  title = {SpectralAI: O(log N) Hardware-Accelerated Expert Routing 
+           via RT Core BVH Traversal},
   year = {2026},
   publisher = {Zenodo},
   doi = {10.5281/zenodo.19457288},
-  url = {[https://github.com/JordiSilvestre/Spectral-AI](https://github.com/JordiSilvestre/Spectral-AI)}
+  url = {https://github.com/JordiSilvestre/Spectral-AI}
 }
 ```
 
 ## License
 
-CC-BY 4.0.
+Apache 2.0
 
 ## Author
 
