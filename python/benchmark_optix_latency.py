@@ -74,16 +74,26 @@ def load_optix_ext():
 
 
 def find_ptx_files() -> tuple[str, str]:
-    """Locate raygen and hitgroup PTX files."""
-    ptx_raygen = PTX_DIR / "optix_router_raygen.ptx"
-    ptx_hitgroup = PTX_DIR / "optix_router_hitgroup.ptx"
+    """Locate raygen and hitgroup PTX/OptixIR files."""
+    search_dirs = [
+        PTX_DIR,
+        PROJECT_ROOT / "build_win" / "ptx",
+        PROJECT_ROOT / "build" / "Release" / "ptx",
+        PROJECT_ROOT / "build_win" / "Release" / "ptx",
+    ]
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        for ext in [".optixir", ".ptx"]:
+            raygen = d / f"optix_router_raygen{ext}"
+            hitgroup = d / f"optix_router_hitgroup{ext}"
+            if raygen.exists() and hitgroup.exists():
+                return str(raygen), str(hitgroup)
 
-    if not ptx_raygen.exists() or not ptx_hitgroup.exists():
-        raise FileNotFoundError(
-            f"PTX files not found in {PTX_DIR}. "
-            "Run build_ptx_win.bat first."
-        )
-    return str(ptx_raygen), str(ptx_hitgroup)
+    raise FileNotFoundError(
+        f"PTX/OptixIR files not found. "
+        "Run build_ptx_win.bat first."
+    )
 
 
 def generate_expert_positions(
